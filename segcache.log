@@ -1,0 +1,6 @@
+2022-04-06T07:37:28.616+00:00 DEBUG [seg::hashtable] hashtable has: 8 primary slots across 1 primary buckets and 2 total buckets
+2022-04-06T07:37:28.616+00:00 DEBUG [seg::segments::segments] heap size: 256 seg size: 64 segments: 4
+2022-04-06T07:37:28.616+00:00 DEBUG [seg::segments::segments] eviction policy: Merge { max: 8, merge: 4, compact: 2 }
+2022-04-06T07:37:28.616+00:00 ERROR [server::poll] Address already in use (os error 98)
+2022-04-06T07:37:28.616+00:00 ERROR [server::threads::admin] failed to start tcp listener
+2022-04-06T07:37:28.616+00:00 ERROR [server::threads::admin] failed to bind admin tcp listener
