@@ -720,7 +720,6 @@ impl Worker {
                                 let matching_req    = self.time_table.get(&time_table_key).expect("REASON");
                                 let sent_time       = matching_req.get_sent();
                                 let time_difference = format!("{:?}\n", recv_time - sent_time);
-                                let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned() + "\n";
 
                                 let ts        = matching_req.get_ts();
                                 let keysize   = matching_req.get_keysize();
@@ -728,8 +727,9 @@ impl Worker {
                                 let client_id = matching_req.get_client_id();
                                 let verb      = matching_req.get_verb();
                                 let ttl       = matching_req.get_ttl();
+                                let latency   = time_difference.split_whitespace().nth(3).unwrap().to_owned() + "\n";
     
-                                println!("{},{},{},{}", verb, ttl, client_id, latency);
+                                println!("--latency_stats: {},{},{},{}", verb, vlen, ttl, client_id, latency);
 
                                 if let Some(ref heatmap) = self.request_heatmap {
                                     let now = Instant::now();
