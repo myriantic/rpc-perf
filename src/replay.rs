@@ -7,6 +7,13 @@
 #[macro_use]
 extern crate rustcommon_logger;
 
+// use std::time::{Duration, Instant};
+
+use std::collections::HashMap;
+use std::{fs, mem, thread};
+use std::os::unix::prelude::FileExt;
+use std::sync::{Arc, Mutex};
+
 use boring::ssl::*;
 use boring::x509::X509;
 use clap::{App, Arg};
@@ -21,6 +28,8 @@ use std::io::Read;
 use std::io::Write;
 use zstd::Decoder;
 
+use std::io::LineWriter;
+
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{BufRead, BufReader, ErrorKind};
@@ -31,7 +40,6 @@ use rpc_perf::*;
 /// TODO(bmartin): this should be consolidated with rpc-perf
 use rustcommon_heatmap::AtomicHeatmap;
 use rustcommon_heatmap::AtomicU64;
-use std::sync::Arc;
 
 // TODO(bmartin): this should be split up into a library and binary
 fn main() {
@@ -180,6 +188,9 @@ fn main() {
     // lookup socket address
     let sockaddr = endpoint.to_socket_addrs().unwrap().next().unwrap();
 
+    // Create File to Write to
+    let output_file = Arc::new(Mutex::new(File::create("foo.txt").unwrap()));
+
     // initialize work queue
     let work = Queue::with_capacity(1024 * 1024); // arbitrarily large
 
@@ -196,13 +207,15 @@ fn main() {
     let _admin_thread = std::thread::spawn(move || admin.run());
 
     // spawn workers
-    for _ in 0..workers {
+    for worker_id in 0..workers {
+
         let mut worker = Worker::new(
             sockaddr,
             poolsize,
             tls.clone(),
             work.clone(),
             request_heatmap.clone(),
+            worker_id,
         );
         std::thread::spawn(move || worker.run());
     }
@@ -304,18 +317,119 @@ impl Controller for SpeedController {
     }
 }
 
+pub struct request_data {
+    ts: u64,
+    // key: String,
+    keysize: usize,
+    vlen: usize,
+    client_id: usize,
+    verb: String,
+    ttl: u32,
+    request: Request,
+}
+
+pub struct TimeKeeper {
+    sent_time: Instant,
+    recv_time: Instant,
+    ts: u64,
+    // key: String,
+    keysize: usize,
+    vlen: usize,
+    client_id: usize,
+    verb: String,
+    ttl: u32,
+}
+
+impl TimeKeeper {
+    pub fn new() -> Self {
+
+        let time_now = Instant::now();
+
+        Self {
+            sent_time:  time_now,
+            recv_time:  time_now,
+            ts:         0 as u64,
+            // key:        "".to_string(),
+            keysize:    0 as usize,
+            vlen:       0 as usize,
+            client_id:  0 as usize,
+            verb:       "".to_string(),
+            ttl:        0 as u32
+        }
+    }
+
+    pub fn set(&mut self, 
+        sent_time: Instant,
+        ts: u64,
+        // key: String,
+        keysize: usize,
+        vlen: usize,
+        client_id: usize,
+        verb: String,
+        ttl: u32,
+    ) {
+        self.sent_time = sent_time;
+        self.ts        = ts;
+        self.keysize   = keysize;
+        self.vlen      = vlen;
+        self.client_id = client_id;
+        self.verb      = verb;
+        self.ttl       = ttl;
+    }
+
+    pub fn set_recv(&mut self, recv_input: Instant) {
+        self.recv_time = recv_input;
+    }
+
+    pub fn get_sent(&self) -> Instant {
+        return self.sent_time;
+    }
+
+    pub fn get_recv(&self) -> Instant {
+        return self.sent_time;
+    }
+
+    pub fn get_ts(&self) -> u64 {
+        return self.ts;
+    }
+
+    pub fn get_vlen(&self) -> usize {
+        return self.vlen;
+    }
+
+    pub fn get_client_id(&self) -> usize {
+        return self.client_id;
+    }
+
+    pub fn get_verb(&self) -> String {
+        return self.verb.to_string();
+    }
+
+    pub fn get_keysize(&self) -> usize {
+        return self.keysize;
+    }
+
+    pub fn get_ttl(&self) -> u32 {
+        return self.ttl;
+    }
+
+    pub fn check_sent(&self) -> bool {
+        return self.sent_time != self.recv_time;
+    }
+}
+
 pub struct Generator {
     stats: GeneratorStats,
     controller: Box<dyn Controller>,
     trace: String,
-    work: Queue<Request>,
+    work: Queue<request_data>,
     binary: bool,
 }
 
 impl Generator {
     pub fn new(
         trace: &str,
-        work: Queue<Request>,
+        work: Queue<request_data>,
         binary: bool,
         controller: Box<dyn Controller>,
     ) -> Self {
@@ -329,11 +443,14 @@ impl Generator {
     }
 
     pub fn run(&mut self) {
-        if self.binary {
-            self.binary()
-        } else {
-            self.ascii()
-        }
+
+        self.ascii()
+        
+        // if self.binary {
+        //     self.binary()
+        // } else {
+        //     self.ascii()
+        // }
     }
 
     fn ascii(&mut self) {
@@ -347,12 +464,14 @@ impl Generator {
         while let Some(Ok(line)) = lines.next() {
             let parts: Vec<&str> = line.split(',').collect();
 
-            let ts: u64 = parts[0].parse::<u64>().expect("invalid timestamp") + 1;
-            let verb = parts[5];
+            let ts: u64          = parts[0].parse::<u64>().expect("invalid timestamp") + 1;
+            let key              = parts[1].to_string();
+            let keysize: usize   = parts[2].parse().expect("failed to parse keysize");
+            let vlen: usize      = parts[3].parse().expect("failed to parse vlen");
+            let client_id: usize = parts[4].parse().expect("failed to parse keysize");
+            let verb             = parts[5];
+            let ttl: u32         = parts[6].parse().expect("failed to parse ttl");
 
-            let key = parts[1].to_string();
-            let vlen: usize = parts[3].parse().expect("failed to parse vlen");
-            let ttl: u32 = parts[6].parse().expect("failed to parse ttl");
 
             let mut request = match verb {
                 "get" => Request::Get { key },
@@ -367,54 +486,21 @@ impl Generator {
                 }
             };
 
-            self.controller.delay(ts);
-
-            while let Err(r) = self.work.push(request) {
-                request = r;
-            }
-
-            self.stats.sent += 1;
-        }
-    }
-
-    fn binary(&mut self) {
-        // open files
-        let zlog = File::open(&self.trace).expect("failed to open input zlog");
-        let zbuf = BufReader::new(zlog);
-        let mut log = Decoder::with_buffer(zbuf).expect("failed to init zstd decoder");
-
-        let mut tmp = [0_u8; 20];
-        while log.read_exact(&mut tmp).is_ok() {
-            let ts: u64 = u32::from_le_bytes([tmp[0], tmp[1], tmp[2], tmp[3]]) as u64;
-            let keyid: u64 = u64::from_le_bytes([
-                tmp[4], tmp[5], tmp[6], tmp[7], tmp[8], tmp[9], tmp[10], tmp[11],
-            ]);
-            let klen_vlen: u32 = u32::from_le_bytes([tmp[12], tmp[13], tmp[14], tmp[15]]);
-            let op_ttl: u32 = u32::from_le_bytes([tmp[16], tmp[17], tmp[18], tmp[19]]);
-            let op: u8 = (op_ttl >> 24) as u8;
-            let ttl: u32 = op_ttl & 0x00FF_FFFF;
-            let klen = klen_vlen >> 22;
-            let vlen: usize = (klen_vlen & 0x003F_FFFF) as usize;
-
-            let key = format!("{:01$}", keyid, klen as usize);
-
-            let mut request = match op {
-                1 => Request::Get { key },
-                2 => Request::Gets { key },
-                3 => Request::Set { key, vlen, ttl },
-                4 => Request::Add { key, vlen, ttl },
-                6 => Request::Replace { key, vlen, ttl },
-                9 => Request::Delete { key },
-                _ => {
-                    self.stats.skip += 1;
-                    continue;
-                }
+            let mut current_request = request_data {
+                ts: ts,
+                // key: key,
+                keysize: keysize,
+                vlen: vlen,
+                client_id: client_id,
+                verb: verb.to_string(),
+                ttl: ttl,
+                request: request,
             };
 
             self.controller.delay(ts);
 
-            while let Err(r) = self.work.push(request) {
-                request = r;
+            while let Err(r) = self.work.push(current_request) {
+                current_request = r;
             }
 
             self.stats.sent += 1;
@@ -431,9 +517,11 @@ struct Worker {
     sessions: Slab<Session>,
     ready_queue: VecDeque<Token>,
     poll: Poll,
-    work: Queue<Request>,
+    work: Queue<request_data>,
     request_heatmap: Option<Arc<AtomicHeatmap<u64, AtomicU64>>>,
     rng: rand_xoshiro::Xoshiro256PlusPlus,
+    time_table: HashMap<(usize, Token), TimeKeeper>,
+    worker_id: usize,
 }
 
 impl Worker {
@@ -441,9 +529,13 @@ impl Worker {
         addr: SocketAddr,
         poolsize: usize,
         tls: Option<SslConnector>,
-        work: Queue<Request>,
+        work: Queue<request_data>,
         request_heatmap: Option<Arc<AtomicHeatmap<u64, AtomicU64>>>,
+        worker_id: usize
     ) -> Self {
+
+        let time_table: HashMap<(usize, Token), TimeKeeper> = HashMap::new();
+
         let poll = mio::Poll::new().unwrap();
 
         let mut sessions: Slab<Session> = Slab::with_capacity(poolsize);
@@ -480,12 +572,18 @@ impl Worker {
             work,
             request_heatmap,
             rng: rng(),
+            time_table,
+            worker_id,
         }
     }
 
-    pub fn send_request(&mut self, token: Token, request: Request) {
+    pub fn send_request(&mut self, token: Token, request_struct: request_data) {
         let session = self.sessions.get_mut(token.0).expect("bad token");
         REQUEST.increment();
+
+        let request = request_struct.request;
+        let mut time_keeper = TimeKeeper::new();
+
         match request {
             Request::Get { key } => {
                 REQUEST_GET.increment();
@@ -533,16 +631,41 @@ impl Worker {
                 debug!("delete {}", key);
             }
         }
+
+        let now       = Instant::now();
+        let ts        = request_struct.ts;
+        let keysize   = request_struct.keysize;
+        let vlen      = request_struct.vlen;
+        let client_id = request_struct.client_id;
+        let verb      = request_struct.verb;
+        let ttl       = request_struct.ttl;
+
+        time_keeper.set(
+            now,
+            ts,
+            keysize,
+            vlen,
+            client_id,
+            verb,
+            ttl, 
+        );
+
+        let time_table_key = (self.worker_id, token);
         let _ = session.flush();
+        self.time_table.insert(time_table_key, time_keeper);
         let _ = session.reregister(&self.poll);
     }
 
     pub fn run(&mut self) {
+
+        // Type inference lets us omit an explicit type signature (which
+        // would be `HashMap<String, String>` in this example).
+
         let mut events = Events::with_capacity(1024);
         loop {
             if let Some(token) = self.ready_queue.pop_front() {
-                if let Some(request) = self.work.pop() {
-                    self.send_request(token, request);
+                if let Some(request_struct) = self.work.pop() {
+                    self.send_request(token, request_struct);
                 } else {
                     self.ready_queue.push_front(token);
                 }
@@ -550,7 +673,7 @@ impl Worker {
 
             let _ = self
                 .poll
-                .poll(&mut events, Some(std::time::Duration::from_millis(1)));
+                .poll(&mut events, Some(std::time::Duration::from_micros(1))); // Changed to Micros for better latency accuracies
 
             for event in &events {
                 let token = event.token();
@@ -588,16 +711,37 @@ impl Worker {
                         }
                         Ok(_) => match decode(session) {
                             Ok(_) => {
+
                                 RESPONSE.increment();
+
+                                let time_table_key = (self.worker_id, token);
+
+                                let recv_time       = Instant::now();
+                                let matching_req    = self.time_table.get(&time_table_key).expect("REASON");
+                                let sent_time       = matching_req.get_sent();
+                                let time_difference = format!("{:?}\n", recv_time - sent_time);
+                                let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned() + "\n";
+
+                                let ts        = matching_req.get_ts();
+                                let keysize   = matching_req.get_keysize();
+                                let vlen      = matching_req.get_vlen();
+                                let client_id = matching_req.get_client_id();
+                                let verb      = matching_req.get_verb();
+                                let ttl       = matching_req.get_ttl();
+    
+                                println!("{},{},{},{}", verb, ttl, client_id, latency);
+
                                 if let Some(ref heatmap) = self.request_heatmap {
                                     let now = Instant::now();
                                     let elapsed = now - session.timestamp();
                                     let us = (elapsed.as_secs_f64() * 1_000_000.0) as u64;
                                     heatmap.increment(now, us, 1);
                                 }
-                                if let Some(request) = self.work.pop() {
-                                    self.send_request(token, request);
+
+                                if let Some(request_struct) = self.work.pop() {
+                                    self.send_request(token, request_struct);
                                 } else {
+                                    self.time_table.remove(&time_table_key);
                                     self.ready_queue.push_back(token);
                                 }
 
