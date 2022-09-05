@@ -650,10 +650,11 @@ impl Worker {
             ttl, 
         );
 
-        let time_table_key = (self.worker_id, token);
         let _ = session.flush();
-        self.time_table.insert(time_table_key, time_keeper);
         let _ = session.reregister(&self.poll);
+
+        let time_table_key = (self.worker_id, token);
+        self.time_table.insert(time_table_key, time_keeper);
     }
 
     pub fn run(&mut self) {
@@ -714,20 +715,19 @@ impl Worker {
 
                                 RESPONSE.increment();
 
-                                let time_table_key = (self.worker_id, token);
-
                                 let recv_time       = Instant::now();
-                                let matching_req    = self.time_table.get(&time_table_key).expect("REASON");
+                                let time_table_key  = (self.worker_id, token);
+                                let matching_req    = self.time_table.get(&time_table_key).expect("NOT FOUND");
                                 let sent_time       = matching_req.get_sent();
                                 let time_difference = format!("{:?}\n", recv_time - sent_time);
 
-                                let ts        = matching_req.get_ts();
-                                let keysize   = matching_req.get_keysize();
-                                let vlen      = matching_req.get_vlen();
-                                let client_id = matching_req.get_client_id();
-                                let verb      = matching_req.get_verb();
-                                let ttl       = matching_req.get_ttl();
-                                let latency   = time_difference.split_whitespace().nth(3).unwrap().to_owned();
+                                // let ts              = matching_req.get_ts();
+                                // let keysize         = matching_req.get_keysize();
+                                let vlen            = matching_req.get_vlen();
+                                let client_id       = matching_req.get_client_id();
+                                let verb            = matching_req.get_verb();
+                                let ttl             = matching_req.get_ttl();
+                                let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
     
                                 println!("--latency_stats: {} {} {} {} {}", verb, vlen, ttl, client_id, latency);
 
