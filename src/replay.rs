@@ -727,9 +727,9 @@ impl Worker {
                                 let client_id = matching_req.get_client_id();
                                 let verb      = matching_req.get_verb();
                                 let ttl       = matching_req.get_ttl();
-                                let latency   = time_difference.split_whitespace().nth(3).unwrap().to_owned() + "\n";
+                                let latency   = time_difference.split_whitespace().nth(3).unwrap().to_owned();
     
-                                println!("--latency_stats: {},{},{},{}", verb, vlen, ttl, client_id, latency);
+                                println!("--latency_stats: {} {} {} {} {}", verb, vlen, ttl, client_id, latency);
 
                                 if let Some(ref heatmap) = self.request_heatmap {
                                     let now = Instant::now();
