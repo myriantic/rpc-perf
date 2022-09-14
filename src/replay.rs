@@ -731,6 +731,9 @@ impl Worker {
     
                                 println!("--latency_stats: {} {} {} {} {}", verb, vlen, ttl, client_id, latency);
 
+                                // Remove After Use
+                                self.time_table.remove(&time_table_key);
+
                                 if let Some(ref heatmap) = self.request_heatmap {
                                     let now = Instant::now();
                                     let elapsed = now - session.timestamp();
