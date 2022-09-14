@@ -10,9 +10,7 @@ extern crate rustcommon_logger;
 // use std::time::{Duration, Instant};
 
 use std::collections::HashMap;
-use std::{fs, mem, thread};
-use std::os::unix::prelude::FileExt;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use boring::ssl::*;
 use boring::x509::X509;
@@ -24,11 +22,8 @@ use rand_distr::Alphanumeric;
 use rustcommon_logger::{Level, Logger};
 use rustcommon_ratelimiter::Ratelimiter;
 use slab::Slab;
-use std::io::Read;
 use std::io::Write;
 use zstd::Decoder;
-
-use std::io::LineWriter;
 
 use std::collections::VecDeque;
 use std::fs::File;
@@ -189,10 +184,13 @@ fn main() {
     let sockaddr = endpoint.to_socket_addrs().unwrap().next().unwrap();
 
     // Create File to Write to
-    let output_file = Arc::new(Mutex::new(File::create("foo.txt").unwrap()));
+    // let output_file = Arc::new(Mutex::new(File::create("foo.txt").unwrap()));
 
     // initialize work queue
     let work = Queue::with_capacity(1024 * 1024); // arbitrarily large
+
+    // // keeps track of vlen per client_id
+    // let ttl_hashmap: HashMap<String, u32> = HashMap::new();
 
     let request_heatmap = Some(Arc::new(AtomicHeatmap::<u64, AtomicU64>::new(
         1_000_000,
@@ -214,6 +212,7 @@ fn main() {
             poolsize,
             tls.clone(),
             work.clone(),
+            // ttl_hashmap.clone(),
             request_heatmap.clone(),
             worker_id,
         );
@@ -317,9 +316,9 @@ impl Controller for SpeedController {
     }
 }
 
-pub struct request_data {
+pub struct RequestData {
     ts: u64,
-    // key: String,
+    key: String,
     keysize: usize,
     vlen: usize,
     client_id: usize,
@@ -332,7 +331,7 @@ pub struct TimeKeeper {
     sent_time: Instant,
     recv_time: Instant,
     ts: u64,
-    // key: String,
+    key: String,
     keysize: usize,
     vlen: usize,
     client_id: usize,
@@ -349,7 +348,7 @@ impl TimeKeeper {
             sent_time:  time_now,
             recv_time:  time_now,
             ts:         0 as u64,
-            // key:        "".to_string(),
+            key:        "".to_string(),
             keysize:    0 as usize,
             vlen:       0 as usize,
             client_id:  0 as usize,
@@ -361,7 +360,7 @@ impl TimeKeeper {
     pub fn set(&mut self, 
         sent_time: Instant,
         ts: u64,
-        // key: String,
+        key: String,
         keysize: usize,
         vlen: usize,
         client_id: usize,
@@ -370,6 +369,7 @@ impl TimeKeeper {
     ) {
         self.sent_time = sent_time;
         self.ts        = ts;
+        self.key       = key;
         self.keysize   = keysize;
         self.vlen      = vlen;
         self.client_id = client_id;
@@ -397,6 +397,10 @@ impl TimeKeeper {
         return self.vlen;
     }
 
+    pub fn get_key(&self) -> String {
+        return self.key.clone();
+    }
+
     pub fn get_client_id(&self) -> usize {
         return self.client_id;
     }
@@ -422,16 +426,18 @@ pub struct Generator {
     stats: GeneratorStats,
     controller: Box<dyn Controller>,
     trace: String,
-    work: Queue<request_data>,
+    work: Queue<RequestData>,
     binary: bool,
+    // ttl_hashmap: HashMap<String, u32>,
 }
 
 impl Generator {
     pub fn new(
         trace: &str,
-        work: Queue<request_data>,
+        work: Queue<RequestData>,
         binary: bool,
         controller: Box<dyn Controller>,
+        // ttl_hashmap: HashMap<String, u32>
     ) -> Self {
         Self {
             stats: GeneratorStats::default(),
@@ -439,6 +445,7 @@ impl Generator {
             trace: trace.to_string(),
             work,
             binary,
+            // ttl_hashmap,
         }
     }
 
@@ -473,7 +480,7 @@ impl Generator {
             let ttl: u32         = parts[6].parse().expect("failed to parse ttl");
 
 
-            let mut request = match verb {
+            let request = match verb {
                 "get" => Request::Get { key },
                 "gets" => Request::Gets { key },
                 "set" => Request::Set { key, vlen, ttl },
@@ -486,9 +493,9 @@ impl Generator {
                 }
             };
 
-            let mut current_request = request_data {
+            let mut current_request = RequestData {
                 ts: ts,
-                // key: key,
+                key: parts[1].to_string(),
                 keysize: keysize,
                 vlen: vlen,
                 client_id: client_id,
@@ -498,6 +505,10 @@ impl Generator {
             };
 
             self.controller.delay(ts);
+
+            // if verb == "add" || verb == "replace" || verb == "set" {
+            //     self.ttl_hashmap.insert(parts[1].to_string(), ttl);
+            // }
 
             while let Err(r) = self.work.push(current_request) {
                 current_request = r;
@@ -513,11 +524,12 @@ pub fn rng() -> rand_xoshiro::Xoshiro256PlusPlus {
     rand_xoshiro::Xoshiro256PlusPlus::seed_from_u64(0)
 }
 
-struct Worker {
+struct Worker{
     sessions: Slab<Session>,
     ready_queue: VecDeque<Token>,
     poll: Poll,
-    work: Queue<request_data>,
+    work: Queue<RequestData>,
+    // ttl_hashmap: HashMap<String, u32>,
     request_heatmap: Option<Arc<AtomicHeatmap<u64, AtomicU64>>>,
     rng: rand_xoshiro::Xoshiro256PlusPlus,
     time_table: HashMap<(usize, Token), TimeKeeper>,
@@ -529,9 +541,10 @@ impl Worker {
         addr: SocketAddr,
         poolsize: usize,
         tls: Option<SslConnector>,
-        work: Queue<request_data>,
+        work: Queue<RequestData>,
+        // ttl_hashmap: HashMap<String, u32>,
         request_heatmap: Option<Arc<AtomicHeatmap<u64, AtomicU64>>>,
-        worker_id: usize
+        worker_id: usize,
     ) -> Self {
 
         let time_table: HashMap<(usize, Token), TimeKeeper> = HashMap::new();
@@ -570,6 +583,7 @@ impl Worker {
             ready_queue,
             poll,
             work,
+            // ttl_hashmap,
             request_heatmap,
             rng: rng(),
             time_table,
@@ -577,7 +591,7 @@ impl Worker {
         }
     }
 
-    pub fn send_request(&mut self, token: Token, request_struct: request_data) {
+    pub fn send_request(&mut self, token: Token, request_struct: RequestData) {
         let session = self.sessions.get_mut(token.0).expect("bad token");
         REQUEST.increment();
 
@@ -634,6 +648,7 @@ impl Worker {
 
         let now       = Instant::now();
         let ts        = request_struct.ts;
+        let key       = request_struct.key;
         let keysize   = request_struct.keysize;
         let vlen      = request_struct.vlen;
         let client_id = request_struct.client_id;
@@ -643,6 +658,7 @@ impl Worker {
         time_keeper.set(
             now,
             ts,
+            key,
             keysize,
             vlen,
             client_id,
@@ -711,7 +727,7 @@ impl Worker {
                             warn!("server hangup");
                         }
                         Ok(_) => match decode(session) {
-                            Ok(_) => {
+                            Ok("MISS") => {
 
                                 RESPONSE.increment();
 
@@ -723,13 +739,58 @@ impl Worker {
 
                                 // let ts              = matching_req.get_ts();
                                 // let keysize         = matching_req.get_keysize();
-                                let vlen            = matching_req.get_vlen();
-                                let client_id       = matching_req.get_client_id();
-                                let verb            = matching_req.get_verb();
+                                let key             = matching_req.get_key();
                                 let ttl             = matching_req.get_ttl();
+                                let vlen            = matching_req.get_vlen();
+                                let verb            = matching_req.get_verb();
+                                let client_id       = matching_req.get_client_id();
                                 let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
+                                let cache_hit       = 0;
     
-                                println!("--latency_stats: {} {} {} {} {}", verb, vlen, ttl, client_id, latency);
+                                println!("--latency_stats: {} {} {} {} {} {} {}", verb, vlen, ttl, client_id, latency, key, cache_hit);
+
+                                // Remove After Use
+                                self.time_table.remove(&time_table_key);
+
+                                if let Some(ref heatmap) = self.request_heatmap {
+                                    let now = Instant::now();
+                                    let elapsed = now - session.timestamp();
+                                    let us = (elapsed.as_secs_f64() * 1_000_000.0) as u64;
+                                    heatmap.increment(now, us, 1);
+                                }
+
+                                if let Some(request_struct) = self.work.pop() {
+                                    self.send_request(token, request_struct);
+                                } else {
+                                    self.time_table.remove(&time_table_key);
+                                    self.ready_queue.push_back(token);
+                                }
+
+                                continue;
+
+                            }
+
+                            Ok("HIT") => {
+
+                                RESPONSE.increment();
+
+                                let recv_time       = Instant::now();
+                                let time_table_key  = (self.worker_id, token);
+                                let matching_req    = self.time_table.get(&time_table_key).expect("NOT FOUND");
+                                let sent_time       = matching_req.get_sent();
+                                let time_difference = format!("{:?}\n", recv_time - sent_time);
+
+                                // let ts              = matching_req.get_ts();
+                                // let keysize         = matching_req.get_keysize();
+                                let key             = matching_req.get_key();
+                                let ttl             = matching_req.get_ttl();
+                                let vlen            = matching_req.get_vlen();
+                                let verb            = matching_req.get_verb();
+                                let client_id       = matching_req.get_client_id();
+                                let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
+                                let cache_hit       = 1;
+    
+                                println!("--latency_stats: {} {} {} {} {} {} {}", verb, vlen, ttl, client_id, latency, key, cache_hit);
 
                                 // Remove After Use
                                 self.time_table.remove(&time_table_key);
@@ -750,6 +811,48 @@ impl Worker {
 
                                 continue;
                             }
+
+                            Ok(_) => {
+                                RESPONSE.increment();
+
+                                let recv_time       = Instant::now();
+                                let time_table_key  = (self.worker_id, token);
+                                let matching_req    = self.time_table.get(&time_table_key).expect("NOT FOUND");
+                                let sent_time       = matching_req.get_sent();
+                                let time_difference = format!("{:?}\n", recv_time - sent_time);
+
+                                // let ts              = matching_req.get_ts();
+                                // let keysize         = matching_req.get_keysize();
+                                let key             = matching_req.get_key();
+                                let ttl             = matching_req.get_ttl();
+                                let vlen            = matching_req.get_vlen();
+                                let verb            = matching_req.get_verb();
+                                let client_id       = matching_req.get_client_id();
+                                let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
+                                let cache_hit       = 2;
+    
+                                println!("--latency_stats: {} {} {} {} {} {} {}", verb, vlen, ttl, client_id, latency, key, cache_hit);
+
+                                // Remove After Use
+                                self.time_table.remove(&time_table_key);
+
+                                if let Some(ref heatmap) = self.request_heatmap {
+                                    let now = Instant::now();
+                                    let elapsed = now - session.timestamp();
+                                    let us = (elapsed.as_secs_f64() * 1_000_000.0) as u64;
+                                    heatmap.increment(now, us, 1);
+                                }
+
+                                if let Some(request_struct) = self.work.pop() {
+                                    self.send_request(token, request_struct);
+                                } else {
+                                    self.time_table.remove(&time_table_key);
+                                    self.ready_queue.push_back(token);
+                                }
+
+                                continue;
+                            }
+
                             Err(ParseError::Incomplete) => {
                                 continue;
                             }
@@ -796,7 +899,7 @@ pub enum ParseError {
 }
 
 // this is a very barebones memcache parser
-fn decode(buffer: &mut Session) -> Result<(), ParseError> {
+fn decode(buffer: &mut Session) -> Result<&str, ParseError> {
     // no-copy borrow as a slice
     let buf: &[u8] = (*buffer).buffer();
 
@@ -813,7 +916,7 @@ fn decode(buffer: &mut Session) -> Result<(), ParseError> {
         let bytes = response.as_bytes();
         if buf.len() >= bytes.len() && &buf[0..bytes.len()] == bytes {
             let _ = buffer.consume(bytes.len());
-            return Ok(());
+            return Ok("STORE_REQUEST");
         }
     }
 
@@ -821,9 +924,11 @@ fn decode(buffer: &mut Session) -> Result<(), ParseError> {
     if let Some(response_end) = windows.position(|w| w == b"END\r\n") {
         if response_end > 0 {
             RESPONSE_HIT.increment();
+            let _ = buffer.consume(response_end + 5);
+            return Ok("HIT")
         }
         let _ = buffer.consume(response_end + 5);
-        return Ok(());
+        return Ok("MISS");
     }
 
     Err(ParseError::Incomplete)
