@@ -673,7 +673,7 @@ impl Worker {
         self.time_table.insert(time_table_key, time_keeper);
     }
     
-    pub fn decode(buffer: &mut Session) -> Result<&str, ParseError> {
+    fn decode(buffer: &mut Session) -> Result<&str, ParseError> {
         // no-copy borrow as a slice
         let buf: &[u8] = (*buffer).buffer();
     
