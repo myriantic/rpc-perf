@@ -672,44 +672,6 @@ impl Worker {
         let time_table_key = (self.worker_id, token);
         self.time_table.insert(time_table_key, time_keeper);
     }
-    
-    fn decode(buffer: &mut Session) -> Result<&str, ParseError> {
-
-        // no-copy borrow as a slice
-        let buf: &[u8] = (*buffer).buffer();
-
-        // let buf: [u8] = buffer.buffer();
-    
-        debug!("buffer content: {:?}", buf);
-    
-        for response in &[
-            "STORED\r\n",
-            "NOT_STORED\r\n",
-            "EXISTS\r\n",
-            "NOT_FOUND\r\n",
-            "DELETED\r\n",
-            "TOUCHED\r\n",
-        ] {
-            let bytes = response.as_bytes();
-            if buf.len() >= bytes.len() && &buf[0..bytes.len()] == bytes {
-                let _ = buffer.consume(bytes.len());
-                return Ok("STORE_REQUEST");
-            }
-        }
-    
-        let mut windows = buf.windows(5);
-        if let Some(response_end) = windows.position(|w| w == b"END\r\n") {
-            if response_end > 0 {
-                RESPONSE_HIT.increment();
-                let _ = buffer.consume(response_end + 5);
-                return Ok("HIT")
-            }
-            let _ = buffer.consume(response_end + 5);
-            return Ok("MISS");
-        }
-    
-        Err(ParseError::Incomplete)
-    }
 
     pub fn run(&mut self) {
 
@@ -764,120 +726,7 @@ impl Worker {
                             session.close();
                             warn!("server hangup");
                         }
-                        Ok(_) => match Worker::decode(session) {
-                            
-                            Ok("MISS") => {
-
-                                RESPONSE.increment();
-
-                                let recv_time       = Instant::now();
-                                let time_table_key  = (self.worker_id, token);
-                                let matching_req    = self.time_table.get(&time_table_key).expect("NOT FOUND");
-                                let sent_time       = matching_req.get_sent();
-                                let time_difference = format!("{:?}\n", recv_time - sent_time);
-
-                                // let ts              = matching_req.get_ts();
-                                // let keysize         = matching_req.get_keysize();
-                                // let key             = matching_req.get_key();
-                                // let ttl             = matching_req.get_ttl();
-                                // let vlen            = matching_req.get_vlen();
-                                // let verb            = matching_req.get_verb();
-                                // let client_id       = matching_req.get_client_id();
-                                // let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
-                                // let cache_hit       = 0;
-    
-                                // Non-successful add, replace, etc, seems to come here, so sanitise 
-                                let verb = matching_req.get_verb();
-                                if verb == "get" || verb == "gets" {
-                                    println!(
-                                        "--latency_stats0: {} {} {} {} {} {} {}", 
-                                        matching_req.get_verb(), 
-                                        matching_req.get_vlen(), 
-                                        matching_req.get_ttl(), 
-                                        matching_req.get_client_id(), 
-                                        time_difference.split_whitespace().nth(3).unwrap().to_owned(), 
-                                        matching_req.get_key(), 
-                                        0,
-                                    );
-                                }
-
-                                // Remove After Use
-                                self.time_table.remove(&time_table_key);
-
-                                if let Some(ref heatmap) = self.request_heatmap {
-                                    let now = Instant::now();
-                                    let elapsed = now - session.timestamp();
-                                    let us = (elapsed.as_secs_f64() * 1_000_000.0) as u64;
-                                    heatmap.increment(now, us, 1);
-                                }
-
-                                if let Some(request_struct) = self.work.pop() {
-                                    self.send_request(token, request_struct);
-                                } else {
-                                    self.ready_queue.push_back(token);
-                                }
-
-                                continue;
-
-                            }
-
-                            Ok("HIT") => {
-
-                                RESPONSE.increment();
-
-                                let recv_time       = Instant::now();
-                                let time_table_key  = (self.worker_id, token);
-                                let matching_req    = self.time_table.get(&time_table_key).expect("NOT FOUND");
-                                let sent_time       = matching_req.get_sent();
-                                let time_difference = format!("{:?}\n", recv_time - sent_time);
-
-                                // let ts              = matching_req.get_ts();
-                                // let keysize         = matching_req.get_keysize();
-                                // let key             = matching_req.get_key();
-                                // let ttl             = matching_req.get_ttl();
-                                // let vlen            = matching_req.get_vlen();
-                                // let verb            = matching_req.get_verb();
-                                // let client_id       = matching_req.get_client_id();
-                                // let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
-                                // let cache_hit       = 1;
-    
-                                // Only get / gets should be printed
-                                // if verb == "get" || verb == "gets" {
-                                // println!("--latency_stats1: {} {} {} {} {} {} {}", verb, vlen, ttl, client_id, latency, key, cache_hit);
-                                // }
-                                
-                                let verb = matching_req.get_verb();
-                                if verb == "get" || verb == "gets" {
-                                    println!(
-                                        "--latency_stats1: {} {} {} {} {} {} {}", 
-                                        matching_req.get_verb(), 
-                                        matching_req.get_vlen(), 
-                                        matching_req.get_ttl(), 
-                                        matching_req.get_client_id(), 
-                                        time_difference.split_whitespace().nth(3).unwrap().to_owned(), 
-                                        matching_req.get_key(), 
-                                        1,
-                                    );
-                                }
-
-                                // Remove After Use
-                                self.time_table.remove(&time_table_key);
-
-                                if let Some(ref heatmap) = self.request_heatmap {
-                                    let now = Instant::now();
-                                    let elapsed = now - session.timestamp();
-                                    let us = (elapsed.as_secs_f64() * 1_000_000.0) as u64;
-                                    heatmap.increment(now, us, 1);
-                                }
-
-                                if let Some(request_struct) = self.work.pop() {
-                                    self.send_request(token, request_struct);
-                                } else {
-                                    self.ready_queue.push_back(token);
-                                }
-
-                                continue;
-                            }
+                        Ok(_) => match decode(session) {
 
                             Ok(_) => {
 
@@ -889,34 +738,16 @@ impl Worker {
                                 let sent_time       = matching_req.get_sent();
                                 let time_difference = format!("{:?}\n", recv_time - sent_time);
 
-                                // let ts              = matching_req.get_ts();
-                                // let keysize         = matching_req.get_keysize();
-                                // let key             = matching_req.get_key();
-                                // let ttl             = matching_req.get_ttl();
-                                // let vlen            = matching_req.get_vlen();
-                                // let verb            = matching_req.get_verb();
-                                // let client_id       = matching_req.get_client_id();
-                                // let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
-                                // let cache_hit       = 2;
-    
-                                // Only Non get / gets should be printed
-                                // if verb != "get" && verb != "gets" {
-                                // println!("--latency_stats2: {} {} {} {} {} {} {}", verb, vlen, ttl, client_id, latency, key, cache_hit);
-                                // }
-
-                                let verb = matching_req.get_verb();
-                                if verb != "get" && verb != "gets" {
-                                    println!(
-                                        "--latency_stats2: {} {} {} {} {} {} {}", 
-                                        matching_req.get_verb(), 
-                                        matching_req.get_vlen(), 
-                                        matching_req.get_ttl(), 
-                                        matching_req.get_client_id(), 
-                                        time_difference.split_whitespace().nth(3).unwrap().to_owned(), 
-                                        matching_req.get_key(), 
-                                        2,
-                                    );
-                                }
+                                // Non-successful add, replace, etc, seems to come here, so sanitise 
+                                println!(
+                                    "--latency_stats: {} {} {} {} {} {}", 
+                                    matching_req.get_verb(), 
+                                    matching_req.get_vlen(), 
+                                    matching_req.get_ttl(), 
+                                    matching_req.get_client_id(), 
+                                    time_difference.split_whitespace().nth(3).unwrap().to_owned(), 
+                                    matching_req.get_key(), 
+                                );
 
                                 // Remove After Use
                                 self.time_table.remove(&time_table_key);
@@ -935,6 +766,7 @@ impl Worker {
                                 }
 
                                 continue;
+
                             }
 
                             Err(ParseError::Incomplete) => {
@@ -983,37 +815,35 @@ pub enum ParseError {
 }
 
 // this is a very barebones memcache parser
-// fn decode(buffer: &mut Session) -> Result<&str, ParseError> {
-//     // no-copy borrow as a slice
-//     let buf: &[u8] = (*buffer).buffer();
+fn decode(buffer: &mut Session) -> Result<(), ParseError> {
+    // no-copy borrow as a slice
+    let buf: &[u8] = (*buffer).buffer();
 
-//     debug!("buffer content: {:?}", buf);
+    debug!("buffer content: {:?}", buf);
 
-//     for response in &[
-//         "STORED\r\n",
-//         "NOT_STORED\r\n",
-//         "EXISTS\r\n",
-//         "NOT_FOUND\r\n",
-//         "DELETED\r\n",
-//         "TOUCHED\r\n",
-//     ] {
-//         let bytes = response.as_bytes();
-//         if buf.len() >= bytes.len() && &buf[0..bytes.len()] == bytes {
-//             let _ = buffer.consume(bytes.len());
-//             return Ok("STORE_REQUEST");
-//         }
-//     }
+    for response in &[
+        "STORED\r\n",
+        "NOT_STORED\r\n",
+        "EXISTS\r\n",
+        "NOT_FOUND\r\n",
+        "DELETED\r\n",
+        "TOUCHED\r\n",
+    ] {
+        let bytes = response.as_bytes();
+        if buf.len() >= bytes.len() && &buf[0..bytes.len()] == bytes {
+            let _ = buffer.consume(bytes.len());
+            return Ok(());
+        }
+    }
 
-//     let mut windows = buf.windows(5);
-//     if let Some(response_end) = windows.position(|w| w == b"END\r\n") {
-//         if response_end > 0 {
-//             RESPONSE_HIT.increment();
-//             let _ = buffer.consume(response_end + 5);
-//             return Ok("HIT")
-//         }
-//         let _ = buffer.consume(response_end + 5);
-//         return Ok("MISS");
-//     }
+    let mut windows = buf.windows(5);
+    if let Some(response_end) = windows.position(|w| w == b"END\r\n") {
+        if response_end > 0 {
+            RESPONSE_HIT.increment();
+        }
+        let _ = buffer.consume(response_end + 5);
+        return Ok(());
+    }
 
-//     Err(ParseError::Incomplete)
-// }
+    Err(ParseError::Incomplete)
+}

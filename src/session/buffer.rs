@@ -7,6 +7,7 @@
 use core::borrow::{Borrow, BorrowMut};
 
 /// A growable byte buffer
+#[derive(Clone)]
 pub struct Buffer {
     buffer: Vec<u8>,
     read_offset: usize,
