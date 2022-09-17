@@ -674,8 +674,11 @@ impl Worker {
     }
     
     fn decode(buffer: &mut Session) -> Result<&str, ParseError> {
+
         // no-copy borrow as a slice
         let buf: &[u8] = (*buffer).buffer();
+
+        // let buf: [u8] = buffer.buffer();
     
         debug!("buffer content: {:?}", buf);
     
@@ -775,16 +778,28 @@ impl Worker {
 
                                 // let ts              = matching_req.get_ts();
                                 // let keysize         = matching_req.get_keysize();
-                                let key             = matching_req.get_key();
-                                let ttl             = matching_req.get_ttl();
-                                let vlen            = matching_req.get_vlen();
-                                let verb            = matching_req.get_verb();
-                                let client_id       = matching_req.get_client_id();
-                                let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
-                                let cache_hit       = 0;
+                                // let key             = matching_req.get_key();
+                                // let ttl             = matching_req.get_ttl();
+                                // let vlen            = matching_req.get_vlen();
+                                // let verb            = matching_req.get_verb();
+                                // let client_id       = matching_req.get_client_id();
+                                // let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
+                                // let cache_hit       = 0;
     
                                 // Non-successful add, replace, etc, seems to come here, so sanitise 
-                                println!("--latency_stats: {} {} {} {} {} {} {}", verb, vlen, ttl, client_id, latency, key, cache_hit);
+                                let verb = matching_req.get_verb();
+                                if verb == "get" || verb == "gets" {
+                                    println!(
+                                        "--latency_stats0: {} {} {} {} {} {} {}", 
+                                        matching_req.get_verb(), 
+                                        matching_req.get_vlen(), 
+                                        matching_req.get_ttl(), 
+                                        matching_req.get_client_id(), 
+                                        time_difference.split_whitespace().nth(3).unwrap().to_owned(), 
+                                        matching_req.get_key(), 
+                                        0,
+                                    );
+                                }
 
                                 // Remove After Use
                                 self.time_table.remove(&time_table_key);
@@ -818,18 +833,32 @@ impl Worker {
 
                                 // let ts              = matching_req.get_ts();
                                 // let keysize         = matching_req.get_keysize();
-                                let key             = matching_req.get_key();
-                                let ttl             = matching_req.get_ttl();
-                                let vlen            = matching_req.get_vlen();
-                                let verb            = matching_req.get_verb();
-                                let client_id       = matching_req.get_client_id();
-                                let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
-                                let cache_hit       = 1;
+                                // let key             = matching_req.get_key();
+                                // let ttl             = matching_req.get_ttl();
+                                // let vlen            = matching_req.get_vlen();
+                                // let verb            = matching_req.get_verb();
+                                // let client_id       = matching_req.get_client_id();
+                                // let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
+                                // let cache_hit       = 1;
     
                                 // Only get / gets should be printed
                                 // if verb == "get" || verb == "gets" {
-                                println!("--latency_stats: {} {} {} {} {} {} {}", verb, vlen, ttl, client_id, latency, key, cache_hit);
+                                // println!("--latency_stats1: {} {} {} {} {} {} {}", verb, vlen, ttl, client_id, latency, key, cache_hit);
                                 // }
+                                
+                                let verb = matching_req.get_verb();
+                                if verb == "get" || verb == "gets" {
+                                    println!(
+                                        "--latency_stats1: {} {} {} {} {} {} {}", 
+                                        matching_req.get_verb(), 
+                                        matching_req.get_vlen(), 
+                                        matching_req.get_ttl(), 
+                                        matching_req.get_client_id(), 
+                                        time_difference.split_whitespace().nth(3).unwrap().to_owned(), 
+                                        matching_req.get_key(), 
+                                        1,
+                                    );
+                                }
 
                                 // Remove After Use
                                 self.time_table.remove(&time_table_key);
@@ -862,18 +891,32 @@ impl Worker {
 
                                 // let ts              = matching_req.get_ts();
                                 // let keysize         = matching_req.get_keysize();
-                                let key             = matching_req.get_key();
-                                let ttl             = matching_req.get_ttl();
-                                let vlen            = matching_req.get_vlen();
-                                let verb            = matching_req.get_verb();
-                                let client_id       = matching_req.get_client_id();
-                                let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
-                                let cache_hit       = 2;
+                                // let key             = matching_req.get_key();
+                                // let ttl             = matching_req.get_ttl();
+                                // let vlen            = matching_req.get_vlen();
+                                // let verb            = matching_req.get_verb();
+                                // let client_id       = matching_req.get_client_id();
+                                // let latency         = time_difference.split_whitespace().nth(3).unwrap().to_owned();
+                                // let cache_hit       = 2;
     
                                 // Only Non get / gets should be printed
                                 // if verb != "get" && verb != "gets" {
-                                println!("--latency_stats: {} {} {} {} {} {} {}", verb, vlen, ttl, client_id, latency, key, cache_hit);
+                                // println!("--latency_stats2: {} {} {} {} {} {} {}", verb, vlen, ttl, client_id, latency, key, cache_hit);
                                 // }
+
+                                let verb = matching_req.get_verb();
+                                if verb != "get" && verb != "gets" {
+                                    println!(
+                                        "--latency_stats2: {} {} {} {} {} {} {}", 
+                                        matching_req.get_verb(), 
+                                        matching_req.get_vlen(), 
+                                        matching_req.get_ttl(), 
+                                        matching_req.get_client_id(), 
+                                        time_difference.split_whitespace().nth(3).unwrap().to_owned(), 
+                                        matching_req.get_key(), 
+                                        2,
+                                    );
+                                }
 
                                 // Remove After Use
                                 self.time_table.remove(&time_table_key);
