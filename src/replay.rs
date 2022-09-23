@@ -327,6 +327,29 @@ pub struct RequestData {
     request: Request,
 }
 
+pub struct hitCounter {
+    cache_hit: u32,
+}
+
+impl hitCounter {
+
+    pub fn new() -> Self {
+        Self {
+            cache_hit: 0 as u32,
+        }
+    }
+
+    pub fn set(&mut self, 
+        cache_hit: u32,
+    ) {
+        self.cache_hit = cache_hit;
+    }
+
+    pub fn get(&self) -> u32 {
+        return self.cache_hit;
+    }
+}
+
 pub struct TimeKeeper {
     sent_time: Instant,
     recv_time: Instant,
@@ -353,7 +376,7 @@ impl TimeKeeper {
             vlen:       0 as usize,
             client_id:  0 as usize,
             verb:       "".to_string(),
-            ttl:        0 as u32
+            ttl:        0 as u32,
         }
     }
 
@@ -533,6 +556,7 @@ struct Worker{
     request_heatmap: Option<Arc<AtomicHeatmap<u64, AtomicU64>>>,
     rng: rand_xoshiro::Xoshiro256PlusPlus,
     time_table: HashMap<(usize, Token), TimeKeeper>,
+    hit_table:  HashMap<(usize, Token), hitCounter>,
     worker_id: usize,
 }
 
@@ -548,6 +572,7 @@ impl Worker {
     ) -> Self {
 
         let time_table: HashMap<(usize, Token), TimeKeeper> = HashMap::new();
+        let hit_table:  HashMap<(usize, Token), hitCounter> = HashMap::new();
 
         let poll = mio::Poll::new().unwrap();
 
@@ -587,6 +612,7 @@ impl Worker {
             request_heatmap,
             rng: rng(),
             time_table,
+            hit_table,
             worker_id,
         }
     }
@@ -726,56 +752,100 @@ impl Worker {
                             session.close();
                             warn!("server hangup");
                         }
-                        Ok(_) => match decode(session) {
 
-                            Ok(_) => {
+                        Ok(_) => {
 
-                                RESPONSE.increment();
+                            // let mut stored = false;
+                            // let buf: &[u8] = (*session).buffer();
 
-                                let recv_time       = Instant::now();
-                                let time_table_key  = (self.worker_id, token);
-                                let matching_req    = self.time_table.get(&time_table_key).expect("NOT FOUND");
-                                let sent_time       = matching_req.get_sent();
-                                let time_difference = format!("{:?}\n", recv_time - sent_time);
+                            // let mut hit_counter = hitCounter::new();
 
-                                // Non-successful add, replace, etc, seems to come here, so sanitise 
-                                println!(
-                                    "--latency_stats: {} {} {} {} {} {}", 
-                                    matching_req.get_verb(), 
-                                    matching_req.get_vlen(), 
-                                    matching_req.get_ttl(), 
-                                    matching_req.get_client_id(), 
-                                    time_difference.split_whitespace().nth(3).unwrap().to_owned(), 
-                                    matching_req.get_key(), 
-                                );
+                            // debug!("buffer content: {:?}", buf);
 
-                                // Remove After Use
-                                self.time_table.remove(&time_table_key);
+                            // for response in &[
+                            //     "STORED\r\n",
+                            //     "NOT_STORED\r\n",
+                            //     "EXISTS\r\n",
+                            //     "NOT_FOUND\r\n",
+                            //     "DELETED\r\n",
+                            //     "TOUCHED\r\n",
+                            // ] {
+                            //     let bytes = response.as_bytes();
+                            //     if buf.len() >= bytes.len() && &buf[0..bytes.len()] == bytes {
+                            //         hit_counter.set(2);
+                            //         stored = true;
 
-                                if let Some(ref heatmap) = self.request_heatmap {
-                                    let now = Instant::now();
-                                    let elapsed = now - session.timestamp();
-                                    let us = (elapsed.as_secs_f64() * 1_000_000.0) as u64;
-                                    heatmap.increment(now, us, 1);
+                            //     }
+                            // }
+
+                            // if !stored {
+                            //     let mut windows = buf.windows(5);
+                            //     if let Some(response_end) = windows.position(|w| w == b"END\r\n") {
+                            //         if response_end > 0 {
+                            //             hit_counter.set(1);
+                            //         } else {
+                            //             hit_counter.set(0);
+                            //         }
+
+                            //         let time_table_key = (self.worker_id, token);
+                            //         self.hit_table.insert(time_table_key, hit_counter);
+
+                            //     }
+                            // }
+                            
+                            match decode(session) {
+
+                                Ok(_) => {
+
+                                    RESPONSE.increment();
+
+                                    let recv_time       = Instant::now();
+                                    let time_table_key  = (self.worker_id, token);
+                                    let matching_req    = self.time_table.get(&time_table_key).expect("NOT FOUND");
+                                    // let matching_hit    = self.hit_table.get(&time_table_key).expect("NOT FOUND");
+                                    let sent_time       = matching_req.get_sent();
+                                    let time_difference = format!("{:?}\n", recv_time - sent_time);
+
+                                    // Non-successful add, replace, etc, seems to come here, so sanitise 
+                                    println!(
+                                        "--latency_stats: {} {} {} {} {} {}", 
+                                        matching_req.get_verb(), 
+                                        matching_req.get_vlen(), 
+                                        matching_req.get_ttl(), 
+                                        matching_req.get_client_id(), 
+                                        time_difference.split_whitespace().nth(3).unwrap().to_owned(), 
+                                        matching_req.get_key(),
+                                    );
+
+                                    // Remove After Use
+                                    self.time_table.remove(&time_table_key);
+                                    self.hit_table.remove(&time_table_key);
+
+                                    if let Some(ref heatmap) = self.request_heatmap {
+                                        let now = Instant::now();
+                                        let elapsed = now - session.timestamp();
+                                        let us = (elapsed.as_secs_f64() * 1_000_000.0) as u64;
+                                        heatmap.increment(now, us, 1);
+                                    }
+
+                                    if let Some(request_struct) = self.work.pop() {
+                                        self.send_request(token, request_struct);
+                                    } else {
+                                        self.ready_queue.push_back(token);
+                                    }
+
+                                    continue;
+
                                 }
 
-                                if let Some(request_struct) = self.work.pop() {
-                                    self.send_request(token, request_struct);
-                                } else {
-                                    self.ready_queue.push_back(token);
+                                Err(ParseError::Incomplete) => {
+                                    continue;
                                 }
-
-                                continue;
-
-                            }
-
-                            Err(ParseError::Incomplete) => {
-                                continue;
-                            }
-                            Err(_) => {
-                                let _ = session.deregister(&self.poll);
-                                session.close();
-                                warn!("parse error");
+                                Err(_) => {
+                                    let _ = session.deregister(&self.poll);
+                                    session.close();
+                                    warn!("parse error");
+                                }
                             }
                         },
                         Err(e) => {
